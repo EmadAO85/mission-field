@@ -125,9 +125,32 @@ async function openPkg(enc, code) {
   const salt = u.slice(1, 9), iv = u.slice(9, 21), ct = u.slice(21);
   const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(normCode(code)), "PBKDF2", false, ["deriveKey"]);
   const key = await crypto.subtle.deriveKey({name: "PBKDF2", salt, iterations: IT, hash: "SHA-256"}, base, {name: "AES-GCM", length: 256}, false, ["decrypt"]);
-  const z = new Uint8Array(await crypto.subtle.decrypt({name: "AES-GCM", iv}, key, ct));
-  const ds = new DecompressionStream("deflate-raw"), w = ds.writable.getWriter(); w.write(z); w.close();
-  return JSON.parse(new TextDecoder().decode(await new Response(ds.readable).arrayBuffer()));
+  let z; try { z = new Uint8Array(await crypto.subtle.decrypt({name: "AES-GCM", iv}, key, ct)); } catch (e) { const x = new Error("wrong"); x.wrong = true; throw x; }
+  let raw;
+  if (typeof DecompressionStream === "function") { try { const ds = new DecompressionStream("deflate-raw"), w = ds.writable.getWriter(); w.write(z); w.close(); raw = new Uint8Array(await new Response(ds.readable).arrayBuffer()); } catch (e) {} }
+  return JSON.parse(new TextDecoder().decode(raw || inflateRaw(z)));
+}
+/* فكّ ضغط deflate الخام للمتصفحات الأقدم التي لا تدعم DecompressionStream (آيفون قبل iOS 16.4) — على نهج puff من zlib */
+function inflateRaw(src) {
+  let pos = 0, bit = 0, bc = 0; const out = [];
+  const bits = n => { while (bc < n) { if (pos >= src.length) throw new Error("نهاية غير متوقعة"); bit |= src[pos++] << bc; bc += 8; } const v = bit & ((1 << n) - 1); bit >>>= n; bc -= n; return v; };
+  const build = L => { const count = new Uint16Array(16), offs = new Uint16Array(16), symbol = new Uint16Array(L.length); L.forEach(l => count[l]++); count[0] = 0;
+    for (let i = 1; i < 15; i++) offs[i + 1] = offs[i] + count[i]; L.forEach((l, sy) => { if (l) symbol[offs[l]++] = sy; }); return {count, symbol}; };
+  const decode = h => { let code = 0, first = 0, index = 0; for (let len = 1; len < 16; len++) { code |= bits(1); const c = h.count[len]; if (code - c < first) return h.symbol[index + (code - first)]; index += c; first += c; first <<= 1; code <<= 1; } throw new Error("رمز تالف"); };
+  const LB = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258], LE = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
+  const DB = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577], DE = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
+  const codes = (lit, dist) => { for (;;) { const sy = decode(lit); if (sy < 256) out.push(sy); else if (sy === 256) return; else { const i = sy - 257, len = LB[i] + bits(LE[i]), d = decode(dist), dd = DB[d] + bits(DE[d]); for (let k = 0; k < len; k++) out.push(out[out.length - dd]); } } };
+  let last;
+  do { last = bits(1); const type = bits(2);
+    if (type === 0) { bit = 0; bc = 0; const len = src[pos] | src[pos + 1] << 8; pos += 4; for (let k = 0; k < len; k++) out.push(src[pos++]); }
+    else if (type === 1) { const L = []; for (let i = 0; i < 288; i++) L.push(i < 144 ? 8 : i < 256 ? 9 : i < 280 ? 7 : 8); codes(build(L), build(Array(30).fill(5))); }
+    else if (type === 2) { const nl = bits(5) + 257, nd = bits(5) + 1, nc = bits(4) + 4, O = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15], CL = Array(19).fill(0);
+      for (let i = 0; i < nc; i++) CL[O[i]] = bits(3); const ch = build(CL), L = [];
+      while (L.length < nl + nd) { const sy = decode(ch); if (sy < 16) L.push(sy); else if (sy === 16) { const p = L[L.length - 1], r = 3 + bits(2); for (let k = 0; k < r; k++) L.push(p); } else { const r = sy === 17 ? 3 + bits(3) : 11 + bits(7); for (let k = 0; k < r; k++) L.push(0); } }
+      codes(build(L.slice(0, nl)), build(L.slice(nl))); }
+    else throw new Error("نوع كتلة غير معروف");
+  } while (!last);
+  return new Uint8Array(out);
 }
 
 /* ---------------------------------------------------------------- الوقت بالنسبة للساعة «س» */
@@ -179,9 +202,9 @@ function lockScreen(msg) {
     <p>أدخل رمز الدخول</p><input class="code" id="code" maxlength="4" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" spellcheck="false" placeholder="0000">
     <p id="err"></p><button class="btn pri full" id="go">فتح المهمة</button>
     ${ids.length > 1 ? `<p class="small muted" style="margin-top:14px">مهام أخرى على الهاتف: ${ids.filter(x => x !== PID).map(x => `<button class="btn" data-pk="${x}">${esc(P[x].label || x)}</button>`).join(" ")}</p>` : ""}
-    <p class="small muted" style="margin-top:18px"><button class="btn" id="del">حذف المهمة من الهاتف</button></p></div>`;
+    <p class="small muted" style="margin-top:18px">إصدار العارض: <span dir="ltr">050dbe</span></p><p class="small muted"><button class="btn" id="del">حذف المهمة من الهاتف</button></p></div>`;
   const go = async () => { const c = $("#code").value; $("#err").innerHTML = "";
-    try { PKG = await openPkg(P[PID].enc, c); } catch (e) { $("#err").innerHTML = `<div class="errbox">رمز الدخول غير صحيح.</div>`; return; }
+    try { PKG = await openPkg(P[PID].enc, c); } catch (e) { $("#err").innerHTML = e.wrong ? `<div class="errbox">رمز الدخول غير صحيح لهذه المهمة (${esc(P[PID].label || "حزمة محفوظة")}). تأكّد أنها المهمة التي مسحتها الآن.</div>` : `<div class="errbox">تعذّر فتح المهمة على هذا المتصفح: ${esc(e.message)}. حدّث النظام أو استخدم كروم/سفاري أحدث.</div>`; return; }
     if (PKG.exp && Date.now() > PKG.exp) { delete P[PID]; LS.set("mf.pkgs", P); PKG = M = null; lockScreen("انتهت صلاحية هذه المهمة وحُذفت من الهاتف."); return; }
     P[PID].exp = PKG.exp; P[PID].label = `عملية «${PKG.n}»` + (PKG.an ? ` — ${PKG.an}` : ""); LS.set("mf.pkgs", P);
     try { sessionStorage.setItem("mf.open." + PID, JSON.stringify(PKG)); } catch (e) {}
@@ -385,7 +408,9 @@ function vMap() {
 }
 
 /* ---------------------------------------------------------------- البدء */
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+/* التحديث التلقائي: يُفحص العارض عند كل فتح، وإذا وصل إصدار جديد تُعاد الصفحة مرة واحدة (ما لم تكن مهمة مفتوحة) */
+if ("serviceWorker" in navigator) { const had = !!navigator.serviceWorker.controller; navigator.serviceWorker.register("sw.js").then(r => r.update()).catch(() => {}); let rl = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => { if (had && !rl && !M) { rl = true; location.reload(); } }); }
 purge();
 const got = intake();
 if (got && got.need) { lockScreen(`تم مسح ${got.have} من ${got.need} — امسح الرمز التالي من ورقة المهمة.`); }
