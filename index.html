@@ -110,12 +110,14 @@ function intake() {
   const P = LS.get("mf.pkgs", {}); P[id] = Object.assign(P[id] || {}, {enc, saved: Date.now()}); LS.set("mf.pkgs", P);
   return {id, ready: true};
 }
+/* الأرقام العربية-الهندية (٠-٩ و۰-۹) من لوحة المفاتيح العربية تُحوَّل إلى 0-9 */
+const normCode = s => String(s || "").replace(/[\u0660-\u0669\u06F0-\u06F9]/g, c => String((c.charCodeAt(0) & 15) % 10)).toUpperCase().replace(/[^A-Z0-9]/g, "");
 const unb64 = s => { s = s.replace(/-/g, "+").replace(/_/g, "/"); const b = atob(s + "===".slice((s.length + 3) % 4)), u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; };
 async function openPkg(enc, code) {
-  const u = unb64(enc); if (u[0] !== 1) throw new Error("صيغة غير معروفة");
+  const u = unb64(enc), IT = {1: 150000, 2: 600000}[u[0]]; if (!IT) throw new Error("صيغة غير معروفة");
   const salt = u.slice(1, 9), iv = u.slice(9, 21), ct = u.slice(21);
-  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(code.toUpperCase().replace(/[^A-Z0-9]/g, "")), "PBKDF2", false, ["deriveKey"]);
-  const key = await crypto.subtle.deriveKey({name: "PBKDF2", salt, iterations: 150000, hash: "SHA-256"}, base, {name: "AES-GCM", length: 256}, false, ["decrypt"]);
+  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(normCode(code)), "PBKDF2", false, ["deriveKey"]);
+  const key = await crypto.subtle.deriveKey({name: "PBKDF2", salt, iterations: IT, hash: "SHA-256"}, base, {name: "AES-GCM", length: 256}, false, ["decrypt"]);
   const z = new Uint8Array(await crypto.subtle.decrypt({name: "AES-GCM", iv}, key, ct));
   const ds = new DecompressionStream("deflate-raw"), w = ds.writable.getWriter(); w.write(z); w.close();
   return JSON.parse(new TextDecoder().decode(await new Response(ds.readable).arrayBuffer()));
@@ -166,7 +168,7 @@ function lockScreen(msg) {
   $("#main").innerHTML = `<div class="center"><img src="${ICON}" alt=""><div class="brand">مهمة<em>MISSION</em></div>
     ${msg ? `<div class="warnbox" style="margin:10px 0">${msg}</div>` : ""}
     <div class="card" style="text-align:start"><b>${esc(P[PID].label || "حزمة مهمة محفوظة")}</b><div class="small muted">حُفظت ${new Date(P[PID].saved).toLocaleString("ar")}</div></div>
-    <p>أدخل رمز الدخول</p><input class="code" id="code" maxlength="9" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX">
+    <p>أدخل رمز الدخول</p><input class="code" id="code" maxlength="11" inputmode="numeric" pattern="[0-9-]*" autocomplete="off" spellcheck="false" placeholder="00000-00000">
     <p id="err"></p><button class="btn pri full" id="go">فتح المهمة</button>
     ${ids.length > 1 ? `<p class="small muted" style="margin-top:14px">مهام أخرى على الهاتف: ${ids.filter(x => x !== PID).map(x => `<button class="btn" data-pk="${x}">${esc(P[x].label || x)}</button>`).join(" ")}</p>` : ""}
     <p class="small muted" style="margin-top:18px"><button class="btn" id="del">حذف المهمة من الهاتف</button></p></div>`;
@@ -177,7 +179,7 @@ function lockScreen(msg) {
     try { sessionStorage.setItem("mf.open." + PID, JSON.stringify(PKG)); } catch (e) {}
     enter(); };
   $("#go").onclick = go; $("#code").onkeydown = e => { if (e.key === "Enter") go(); };
-  $("#code").oninput = e => { let v = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8); e.target.value = v.length > 4 ? v.slice(0, 4) + "-" + v.slice(4) : v; };
+  $("#code").oninput = e => { let v = normCode(e.target.value).slice(0, 10); e.target.value = v.length > 5 ? v.slice(0, 5) + "-" + v.slice(5) : v; };
   $("#del").onclick = () => { if (!confirm("حذف هذه المهمة من الهاتف؟")) return; delete P[PID]; const K = LS.get("mf.me", {}); delete K[PID]; LS.set("mf.me", K); LS.set("mf.pkgs", P); PID = null; lockScreen(); };
   document.querySelectorAll("[data-pk]").forEach(b => b.onclick = () => { PID = b.dataset.pk; lockScreen(); });
 }

@@ -1,4 +1,4 @@
-const C = "mf-cc5971de", F = ["./", "index.html", "manifest.webmanifest"];
+const C = "mf-3264c66f", F = ["./", "index.html", "manifest.webmanifest"];
 self.addEventListener("install", e => { e.waitUntil(caches.open(C).then(c => c.addAll(F)).then(() => self.skipWaiting())); });
 self.addEventListener("activate", e => { e.waitUntil(caches.keys().then(K => Promise.all(K.filter(k => k !== C).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
 self.addEventListener("fetch", e => {
