@@ -101,23 +101,34 @@ function purge() {
   const parts = LS.get("mf.parts", {}); Object.keys(parts).forEach(id => { if (now - parts[id].t > DAY) delete parts[id]; }); LS.set("mf.parts", parts);
 }
 /* رابط الرمز: #p=<معرّف>.<الجزء>.<عدد الأجزاء>.<البيانات> */
+/* الرابط: #n=<معرّف>.<الجزء>.<العدد>.<طول البيانات>.<أرقام>  (أو #p=… base64 للصيغة الأقدم). حروف المعرّف بأي حالة (بعض القارئات تغيّرها)،
+   وطول البيانات يكشف المسح الناقص. كل مهمة جديدة تحلّ محلّ ما قبلها: مهمة واحدة على الهاتف، فلا يُطلب رمز مهمة قديمة. */
 function intake() {
-  const m = location.hash.match(/^#[pn]=([A-Z0-9]+)\.(\d+)\.(\d+)\.([A-Za-z0-9_-]+)$/), num = /^#n=/.test(location.hash);
+  const h = location.hash, m = h.match(/^#([pn])=([A-Za-z0-9]+)\.(\d+)\.(\d+)\.(?:(\d+)\.)?([A-Za-z0-9_-]+)$/);
   history.replaceState(null, "", location.pathname + location.search);          // لا يبقى المحتوى في شريط العنوان
-  if (!m) return null;
-  const [, id, i, n, data] = m, parts = LS.get("mf.parts", {}), e = parts[id] || {t: Date.now(), n: +n, d: {}};
+  if (!m) return /^#[pn]=/i.test(h) ? {bad: true} : null;
+  const num = m[1] === "n", id = m[2].toUpperCase(), i = m[3], n = +m[4], len = m[5], data = m[6];
+  if ((len && data.length !== +len) || (num && !/^\d+$/.test(data))) return {bad: true};
+  const parts = LS.get("mf.parts", {}), e = parts[id] || {t: Date.now(), n, d: {}};
   e.d[i] = data; parts[id] = e;
-  if (Object.keys(e.d).length < +n) { LS.set("mf.parts", parts); return {id, need: +n, have: Object.keys(e.d).length}; }
-  let enc = Array.from({length: +n}, (_, k) => e.d[k + 1]).join("");
-  if (num) enc = b64u(fromDigits(enc)); delete parts[id]; LS.set("mf.parts", parts);
-  const P = LS.get("mf.pkgs", {}); P[id] = Object.assign(P[id] || {}, {enc, saved: Date.now()}); LS.set("mf.pkgs", P);
+  if (Object.keys(e.d).length < n) { LS.set("mf.parts", parts); return {id, need: n, have: Object.keys(e.d).length}; }
+  let enc = Array.from({length: n}, (_, k) => e.d[k + 1]).join(""); delete parts[id]; LS.set("mf.parts", parts);
+  if (num) { try { enc = b64u(fromDigits(enc)); } catch (x) { return {bad: true}; } }
+  wipeAll(); LS.set("mf.pkgs", {[id]: {enc, saved: Date.now()}});
   return {id, ready: true};
 }
+/* محو كل ما على الهاتف من مهام سابقة: الحزم، اختيار الجهاز، الجلسات المفتوحة، صور المنطقة */
+function wipeAll() {
+  Object.keys(LS.get("mf.pkgs", {})).forEach(id => { try { sessionStorage.removeItem("mf.open." + id); } catch (e) {} });
+  LS.set("mf.pkgs", {}); LS.set("mf.me", {}); LS.set("mf.tiles", {});
+  if ("caches" in window) caches.delete("mf-tiles");
+}
+const newest = () => { const P = LS.get("mf.pkgs", {}); return Object.keys(P).sort((a, b) => P[b].saved - P[a].saved)[0] || null; };
 /* الأرقام العربية-الهندية (٠-٩ و۰-۹) من لوحة المفاتيح العربية تُحوَّل إلى 0-9 */
 const normCode = s => String(s || "").replace(/[\u0660-\u0669\u06F0-\u06F9]/g, c => String((c.charCodeAt(0) & 15) % 10)).toUpperCase().replace(/[^A-Z0-9]/g, "");
 /* رمز الأرقام (#n=): كل 17 رقماً ← 7 بايتات، والجزء الأخير بحسب طوله */
 const DIG = [0, 3, 5, 8, 10, 13, 15, 17];
-function fromDigits(s) { const out = []; for (let i = 0; i < s.length; i += 17) { const c = s.slice(i, i + 17), k = DIG.indexOf(c.length); let n = BigInt(c); const b = []; for (let j = 0; j < k; j++) { b.unshift(Number(n & 255n)); n >>= 8n; } out.push(...b); } return new Uint8Array(out); }
+function fromDigits(s) { const out = []; for (let i = 0; i < s.length; i += 17) { const c = s.slice(i, i + 17), k = DIG.indexOf(c.length); if (k < 0) throw new Error("طول غير صالح"); let n = BigInt(c); const b = []; for (let j = 0; j < k; j++) { b.unshift(Number(n & 255n)); n >>= 8n; } out.push(...b); } return new Uint8Array(out); }
 const b64u = u8 => { let s = ""; for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]); return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); };
 const unb64 = s => { s = s.replace(/-/g, "+").replace(/_/g, "/"); const b = atob(s + "===".slice((s.length + 3) % 4)), u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; };
 async function openPkg(enc, code) {
@@ -195,16 +206,20 @@ function lockScreen(msg) {
   if (!ids.length) { $("#main").innerHTML = `<div class="center"><img src="${ICON}" alt=""><div class="brand">مهمة<em>MISSION</em></div><p class="muted">النسخة الميدانية</p>${msg ? `<div class="warnbox">${msg}</div>` : ""}
     <div class="card" style="text-align:start;margin-top:16px">${Object.keys(LS.get("mf.parts", {})).length ? `<b>بانتظار مسح بقية الرموز.</b><p class="small">امسح الرمز التالي من ورقة المهمة بكاميرا الهاتف، ثم أدخل` : `<b>لا توجد مهمة على هذا الهاتف.</b><p class="small">امسح رموز QR الخاصة بالمهمة بكاميرا الهاتف في غرفة العمليات المشتركة، ثم أدخل`} رمز الدخول الذي يُبلَّغ لك شفهياً.</p>
     <p class="small muted">الآيفون: استخدم المهمة من سفاري نفسه (لا تُضفها إلى الشاشة الرئيسية). الأندرويد: يمكن تثبيتها من قائمة كروم.</p></div></div>`; return; }
-  PID = PID && P[PID] ? PID : ids.sort((a, b) => P[b].saved - P[a].saved)[0];
+  PID = PID && P[PID] ? PID : newest();
   $("#main").innerHTML = `<div class="center"><img src="${ICON}" alt=""><div class="brand">مهمة<em>MISSION</em></div>
     ${msg ? `<div class="warnbox" style="margin:10px 0">${msg}</div>` : ""}
     <div class="card" style="text-align:start"><b>${esc(P[PID].label || "حزمة مهمة محفوظة")}</b><div class="small muted">حُفظت ${new Date(P[PID].saved).toLocaleString("ar")}</div></div>
     <p>أدخل رمز الدخول</p><input class="code" id="code" maxlength="4" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" spellcheck="false" placeholder="0000">
     <p id="err"></p><button class="btn pri full" id="go">فتح المهمة</button>
     ${ids.length > 1 ? `<p class="small muted" style="margin-top:14px">مهام أخرى على الهاتف: ${ids.filter(x => x !== PID).map(x => `<button class="btn" data-pk="${x}">${esc(P[x].label || x)}</button>`).join(" ")}</p>` : ""}
-    <p class="small muted" style="margin-top:18px">إصدار العارض: <span dir="ltr">050dbe</span></p><p class="small muted"><button class="btn" id="del">حذف المهمة من الهاتف</button></p></div>`;
+    <p class="small muted" style="margin-top:18px">إصدار العارض: <span dir="ltr">8bc1ec</span></p><p class="small muted"><button class="btn" id="del">حذف المهمة من الهاتف</button></p></div>`;
   const go = async () => { const c = $("#code").value; $("#err").innerHTML = "";
-    try { PKG = await openPkg(P[PID].enc, c); } catch (e) { $("#err").innerHTML = e.wrong ? `<div class="errbox">رمز الدخول غير صحيح لهذه المهمة (${esc(P[PID].label || "حزمة محفوظة")}). تأكّد أنها المهمة التي مسحتها الآن.</div>` : `<div class="errbox">تعذّر فتح المهمة على هذا المتصفح: ${esc(e.message)}. حدّث النظام أو استخدم كروم/سفاري أحدث.</div>`; return; }
+    // الرمز يُجرَّب على المهمة المعروضة ثم على أي مهمة أخرى محفوظة (الأحدث أولاً)
+    let err = null; PKG = null;
+    for (const id of [PID, ...Object.keys(P).filter(x => x !== PID).sort((a, b) => P[b].saved - P[a].saved)]) {
+      try { PKG = await openPkg(P[id].enc, c); PID = id; break; } catch (e) { if (!err || !err.wrong) err = e; } }
+    if (!PKG) { const e = err || new Error("—"); $("#err").innerHTML = e.wrong ? `<div class="errbox">رمز الدخول غير صحيح لهذه المهمة (${esc(P[PID].label || "حزمة محفوظة")}). تأكّد أنه الرمز المكتوب تحت رمز QR الذي مسحته الآن، أو امسح الرمز مرة أخرى.</div>` : `<div class="errbox">تعذّر فتح المهمة على هذا المتصفح: ${esc(e.message)}. حدّث النظام أو استخدم كروم/سفاري أحدث.</div>`; return; }
     if (PKG.exp && Date.now() > PKG.exp) { delete P[PID]; LS.set("mf.pkgs", P); PKG = M = null; lockScreen("انتهت صلاحية هذه المهمة وحُذفت من الهاتف."); return; }
     P[PID].exp = PKG.exp; P[PID].label = `عملية «${PKG.n}»` + (PKG.an ? ` — ${PKG.an}` : ""); LS.set("mf.pkgs", P);
     try { sessionStorage.setItem("mf.open." + PID, JSON.stringify(PKG)); } catch (e) {}
@@ -413,10 +428,11 @@ if ("serviceWorker" in navigator) { const had = !!navigator.serviceWorker.contro
   navigator.serviceWorker.addEventListener("controllerchange", () => { if (had && !rl && !M) { rl = true; location.reload(); } }); }
 purge();
 const got = intake();
-if (got && got.need) { lockScreen(`تم مسح ${got.have} من ${got.need} — امسح الرمز التالي من ورقة المهمة.`); }
+if (got && got.bad) { PID = newest(); lockScreen("لم يُقرأ رمز QR كاملاً — امسحه مرة أخرى وثبّت الهاتف على بعد 20–30 سم."); }
+else if (got && got.need) { lockScreen(`تم مسح ${got.have} من ${got.need} — امسح الرمز التالي من ورقة المهمة.`); }
 else {
-  if (got && got.ready) PID = got.id;
-  let open = null; try { const P = LS.get("mf.pkgs", {}); const id = PID || Object.keys(P)[0]; if (id) { PID = id; open = JSON.parse(sessionStorage.getItem("mf.open." + id)); } } catch (e) {}
+  PID = got && got.ready ? got.id : newest();
+  let open = null; try { if (PID) open = JSON.parse(sessionStorage.getItem("mf.open." + PID)); } catch (e) {}
   if (open && !(open.exp && Date.now() > open.exp)) { PKG = open; enter(); } else lockScreen(got && got.ready ? "استُلمت المهمة على الهاتف — أدخل رمز الدخول." : "");
 }
 setInterval(() => { if (M && !$("#hdr").hidden) { purge(); header(); } }, 30000);
