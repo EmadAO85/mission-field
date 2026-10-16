@@ -1,8 +1,12 @@
-const C = "mf-62883c49", F = ["./", "index.html", "manifest.webmanifest"];
+const C = "mf-02dc2a81", F = ["./", "index.html", "manifest.webmanifest"];
 self.addEventListener("install", e => { e.waitUntil(caches.open(C).then(c => c.addAll(F)).then(() => self.skipWaiting())); });
-self.addEventListener("activate", e => { e.waitUntil(caches.keys().then(K => Promise.all(K.filter(k => k !== C).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
+self.addEventListener("activate", e => { e.waitUntil(caches.keys().then(K => Promise.all(K.filter(k => k !== C && k !== "mf-tiles").map(k => caches.delete(k)))).then(() => self.clients.claim())); });
 self.addEventListener("fetch", e => {
-  if (e.request.method !== "GET" || new URL(e.request.url).origin !== location.origin) return;
+  if (e.request.method !== "GET") return;
+  const u = new URL(e.request.url);
+  // بلاطات الصورة الجوية: من المحفوظ أولاً (دون اتصال في الميدان)، وما يُعرض جديداً يُحفظ أيضاً
+  if (u.hostname === "server.arcgisonline.com") { e.respondWith(caches.open("mf-tiles").then(c => c.match(u.href).then(r => r || fetch(u.href, {mode: "cors"}).then(n => { if (n.ok) c.put(u.href, n.clone()); return n; })))); return; }
+  if (u.origin !== location.origin) return;
   // الصفحة: من الشبكة أولاً (فيصل كل تحديث فوراً عند وجود اتصال)، ومن النسخة المحفوظة دون اتصال
   // وإن كانت الإشارة ضعيفة في الميدان: بعد 3 ثوانٍ تُعرض النسخة المحفوظة دون انتظار
   if (e.request.mode === "navigate") {

@@ -57,6 +57,7 @@ textarea { width: 100%; min-height: 190px; line-height: 1.7; background: #111418
 #map svg { width: 100%; height: 100%; display: block; }
 .mtools { position: absolute; top: 8px; left: 8px; display: grid; gap: 6px; } .mtools button { width: 40px; height: 40px; background: rgba(37,42,49,.95); border: 1px solid var(--ln); border-radius: 4px; color: var(--tx); font-size: 18px; }
 .mtools button.on { background: var(--pri); border-color: var(--pri); }
+.attr { position: absolute; bottom: 2px; right: 4px; font-size: 9px; color: #ddd; text-shadow: 0 0 2px #000; pointer-events: none; }
 .minfo { margin-top: 8px; } .gps { font-size: 12.5px; color: var(--t2); }
 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--c); flex: none; box-shadow: 0 0 0 1px rgba(255,255,255,.35); }
 .pick { display: grid; gap: 8px; margin-top: 12px; } .pick button { display: flex; align-items: center; gap: 10px; text-align: start; border-inline-start: 4px solid var(--c); font-weight: 700; }
@@ -96,22 +97,28 @@ function purge() {
   const now = Date.now(), P = LS.get("mf.pkgs", {});
   Object.keys(P).forEach(id => { const p = P[id]; if ((p.exp && now > p.exp) || (!p.exp && now - p.saved > 7 * DAY)) { delete P[id]; try { sessionStorage.removeItem("mf.open." + id); } catch (e) {} } });
   LS.set("mf.pkgs", P);
+  if (!Object.keys(P).length && "caches" in window) { caches.delete(TC); LS.set("mf.tiles", {}); }       // لا تبقى صور المنطقة بعد محو المهام
   const parts = LS.get("mf.parts", {}); Object.keys(parts).forEach(id => { if (now - parts[id].t > DAY) delete parts[id]; }); LS.set("mf.parts", parts);
 }
 /* رابط الرمز: #p=<معرّف>.<الجزء>.<عدد الأجزاء>.<البيانات> */
 function intake() {
-  const m = location.hash.match(/^#p=([A-Z0-9]+)\.(\d+)\.(\d+)\.([A-Za-z0-9_-]+)$/);
+  const m = location.hash.match(/^#[pn]=([A-Z0-9]+)\.(\d+)\.(\d+)\.([A-Za-z0-9_-]+)$/), num = /^#n=/.test(location.hash);
   history.replaceState(null, "", location.pathname + location.search);          // لا يبقى المحتوى في شريط العنوان
   if (!m) return null;
   const [, id, i, n, data] = m, parts = LS.get("mf.parts", {}), e = parts[id] || {t: Date.now(), n: +n, d: {}};
   e.d[i] = data; parts[id] = e;
   if (Object.keys(e.d).length < +n) { LS.set("mf.parts", parts); return {id, need: +n, have: Object.keys(e.d).length}; }
-  const enc = Array.from({length: +n}, (_, k) => e.d[k + 1]).join(""); delete parts[id]; LS.set("mf.parts", parts);
+  let enc = Array.from({length: +n}, (_, k) => e.d[k + 1]).join("");
+  if (num) enc = b64u(fromDigits(enc)); delete parts[id]; LS.set("mf.parts", parts);
   const P = LS.get("mf.pkgs", {}); P[id] = Object.assign(P[id] || {}, {enc, saved: Date.now()}); LS.set("mf.pkgs", P);
   return {id, ready: true};
 }
 /* الأرقام العربية-الهندية (٠-٩ و۰-۹) من لوحة المفاتيح العربية تُحوَّل إلى 0-9 */
 const normCode = s => String(s || "").replace(/[\u0660-\u0669\u06F0-\u06F9]/g, c => String((c.charCodeAt(0) & 15) % 10)).toUpperCase().replace(/[^A-Z0-9]/g, "");
+/* رمز الأرقام (#n=): كل 17 رقماً ← 7 بايتات، والجزء الأخير بحسب طوله */
+const DIG = [0, 3, 5, 8, 10, 13, 15, 17];
+function fromDigits(s) { const out = []; for (let i = 0; i < s.length; i += 17) { const c = s.slice(i, i + 17), k = DIG.indexOf(c.length); let n = BigInt(c); const b = []; for (let j = 0; j < k; j++) { b.unshift(Number(n & 255n)); n >>= 8n; } out.push(...b); } return new Uint8Array(out); }
+const b64u = u8 => { let s = ""; for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]); return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); };
 const unb64 = s => { s = s.replace(/-/g, "+").replace(/_/g, "/"); const b = atob(s + "===".slice((s.length + 3) % 4)), u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u; };
 async function openPkg(enc, code) {
   const u = unb64(enc), IT = {1: 150000, 2: 600000}[u[0]]; if (!IT) throw new Error("صيغة غير معروفة");
@@ -146,6 +153,7 @@ function choose(msg) {
   document.querySelectorAll("[data-me]").forEach(b => b.onclick = () => { ME = +b.dataset.me; const K = LS.get("mf.me", {}); K[PID] = ME; LS.set("mf.me", K); derive(); TAB = "mine"; VB = null; app(); });
 }
 function enter() {           // بعد فتح الحزمة: v1 قديمة لجهاز واحد، v2 للجميع
+  setTimeout(cacheArea, 500);
   if (PKG.v !== 2) { M = PKG; ME = -1; app(); return; }
   ME = LS.get("mf.me", {})[PID] ?? -1;
   if (!PKG.A[ME]) choose(); else { derive(); app(); }
@@ -180,7 +188,7 @@ function lockScreen(msg) {
     enter(); };
   $("#go").onclick = go; $("#code").onkeydown = e => { if (e.key === "Enter") go(); };
   $("#code").oninput = e => { const v = normCode(e.target.value).slice(0, 4); e.target.value = v; if (v.length === 4) go(); };
-  $("#del").onclick = () => { if (!confirm("حذف هذه المهمة من الهاتف؟")) return; delete P[PID]; const K = LS.get("mf.me", {}); delete K[PID]; LS.set("mf.me", K); LS.set("mf.pkgs", P); PID = null; lockScreen(); };
+  $("#del").onclick = () => { if (!confirm("حذف هذه المهمة من الهاتف؟")) return; delete P[PID]; const K = LS.get("mf.me", {}); delete K[PID]; LS.set("mf.me", K); LS.set("mf.pkgs", P); PID = null; purge(); lockScreen(); };
   document.querySelectorAll("[data-pk]").forEach(b => b.onclick = () => { PID = b.dataset.pk; lockScreen(); });
 }
 function app() {
@@ -284,8 +292,34 @@ function feats() {
   M.rt.forEach(x => x[2].length && F.push({id: "r:" + x[0], k: "rt", n: x[0], d: x[1], g: [...x[2][x[2].length >> 1], 0], line: x[2], ag: -1, my: true}));
   return F;
 }
+/* الصورة الجوية: بلاطات Esri World Imagery تُرسم تحت المهام بالإسقاط المحلي نفسه. تُحفظ بلاطات منطقة العمليات على الهاتف عند الفتح في الغرفة
+   فتعمل في الميدان دون اتصال، وتُمحى مع المهمة. طلب البلاطات يكشف لخادم Esri موقع المنطقة — يمكن إيقافها بزر «جوي». */
+const SAT = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/", TC = "mf-tiles";
+let SATON = LS.get("mf.sat", true), BGKEY = "";
+const t2lon = (x, z) => x / 2 ** z * 360 - 180, t2lat = (y, z) => 180 / Math.PI * Math.atan(Math.sinh(Math.PI - 2 * Math.PI * y / 2 ** z));
+const lon2t = (lo, z) => Math.floor((lo + 180) / 360 * 2 ** z), lat2t = (la, z) => { const r = la * Math.PI / 180; return Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * 2 ** z); };
+const unproj = (x, y) => [M.ao[0] - y / 110540, M.ao[1] + x / (111320 * Math.cos(M.ao[0] * Math.PI / 180))];
+const zFor = mpp => Math.max(12, Math.min(19, Math.round(Math.log2(156543.03 * Math.cos(M.ao[0] * Math.PI / 180) / mpp))));
+function tileRange(la1, lo1, la2, lo2, z) { const T = []; for (let x = lon2t(Math.min(lo1, lo2), z); x <= lon2t(Math.max(lo1, lo2), z); x++) for (let y = lat2t(Math.max(la1, la2), z); y <= lat2t(Math.min(la1, la2), z); y++) T.push([z, x, y]); return T; }
+const tileSVG = ([z, x, y]) => { const [ax, ay] = proj(t2lat(y, z), t2lon(x, z)), [bx, by] = proj(t2lat(y + 1, z), t2lon(x + 1, z)), e = (bx - ax) * .004;
+  return `<image href="${SAT}${z}/${y}/${x}" x="${ax - e}" y="${ay - e}" width="${bx - ax + 2 * e}" height="${by - ay + 2 * e}" preserveAspectRatio="none"/>`; };
+/* حفظ بلاطات منطقة العمليات (مستويات 14–18، بحدّ أقصى 300 بلاطة) — مرة لكل مهمة، عند وجود اتصال */
+async function cacheArea() {
+  if (!SATON || !navigator.onLine || !("caches" in window) || !PKG || LS.get("mf.tiles", {})[PID]) return;
+  const P = []; const add = (a, b) => P.push([a, b]);
+  (PKG.nai || []).concat(PKG.tai || []).forEach(x => { if (x[2]) { add(x[2][0], x[2][1]); (x[2][3] || []).forEach(q => add(q[0], q[1])); } });
+  (PKG.ctl || []).forEach(x => add(x[2], x[3])); (PKG.rt || []).forEach(x => x[2].forEach(q => add(q[0], q[1])));
+  if (!P.length) add(PKG.ao[0], PKG.ao[1]);
+  const m = .004, la1 = Math.min(...P.map(p => p[0])) - m, la2 = Math.max(...P.map(p => p[0])) + m, lo1 = Math.min(...P.map(p => p[1])) - m, lo2 = Math.max(...P.map(p => p[1])) + m;
+  let T = []; for (let z = 14; z <= 18; z++) { const t = tileRange(la1, lo1, la2, lo2, z); if (T.length + t.length > 300) break; T = T.concat(t); }
+  const c = await caches.open(TC); let ok = 0;
+  for (let i = 0; i < T.length; i += 6) await Promise.all(T.slice(i, i + 6).map(async ([z, x, y]) => { const u = `${SAT}${z}/${y}/${x}`;
+    try { if (!(await c.match(u))) { const r = await fetch(u, {mode: "cors"}); if (r.ok) { await c.put(u, r); ok++; } } else ok++; } catch (e) {} }));
+  const K = LS.get("mf.tiles", {}); K[PID] = ok; LS.set("mf.tiles", K);
+  if (TAB === "map" && $("#satst")) $("#satst").textContent = `الصورة الجوية محفوظة للعمل دون اتصال (${ok} بلاطة).`;
+}
 function vMap() {
-  $("#main").innerHTML = `<div id="map"><svg id="msvg"></svg><div class="mtools"><button id="zin">+</button><button id="zout">−</button><button id="me" class="${WATCH != null ? "on" : ""}" title="موقعي">${ic("loc")}</button><button id="fit">⤢</button></div>${PKG && PKG.v === 2 ? `<div class="seg"><button id="sAll" class="${ALL ? "on" : ""}">كل الأجهزة</button><button id="sMe" class="${ALL ? "" : "on"}">جهازي</button></div>` : ""}</div><div class="minfo card" id="minfo"></div>
+  $("#main").innerHTML = `<div id="map"><svg id="msvg"><g id="bg"></g><g id="fg"></g></svg>${SATON ? `<div class="attr" dir="ltr">Esri, Maxar, Earthstar Geographics</div>` : ""}<div class="mtools"><button id="zin">+</button><button id="zout">−</button><button id="me" class="${WATCH != null ? "on" : ""}" title="موقعي">${ic("loc")}</button><button id="fit">⤢</button><button id="sat" class="${SATON ? "on" : ""}" style="font-size:12px">جوي</button></div>${PKG && PKG.v === 2 ? `<div class="seg"><button id="sAll" class="${ALL ? "on" : ""}">كل الأجهزة</button><button id="sMe" class="${ALL ? "" : "on"}">جهازي</button></div>` : ""}</div><div class="minfo card" id="minfo"></div>
     ${PKG && PKG.v === 2 && ALL ? `<div class="lgd card">${PKG.A.map((a, i) => `<span><i class="dot" style="--c:${esc(vis(a[2]))}"></i>${esc(a[1])}</span>`).join("")}<span>◆ نقطة · ⬭ متقطّع = رصد · ممتلئ = استهداف</span></div>` : ""}`;
   if ($("#sAll")) { $("#sAll").onclick = () => { ALL = true; vMap(); }; $("#sMe").onclick = () => { ALL = false; vMap(); }; }
   const F = feats(), pts = [];
@@ -315,14 +349,21 @@ function vMap() {
     const bar = [50, 100, 200, 500, 1000, 2000, 5000].find(v => v / VB[2] * 360 > 60) || 5000;
     h += `<g transform="translate(${VB[0] + s * 14},${VB[1] + VB[3] - s * 16})"><rect width="${bar}" height="${s * 3}" fill="#F6F7F9"/><text class="lbl" x="${bar / 2}" y="${-s * 5}" text-anchor="middle" font-size="${fs * .9}" style="stroke-width:${s * 3}px">${bar >= 1000 ? bar / 1000 + " كم" : bar + " م"}</text></g>`;
     h += `<text class="lbl" x="${VB[0] + VB[2] - s * 16}" y="${VB[1] + s * 22}" text-anchor="middle" font-size="${fs * 1.2}" style="stroke-width:${s * 3}px;direction:ltr">↑N</text>`;
-    $("#msvg").setAttribute("viewBox", VB.join(" ")); $("#msvg").innerHTML = h;
+    $("#msvg").setAttribute("viewBox", VB.join(" ")); $("#fg").innerHTML = h;
+    if (SATON) { const r = $("#msvg").getBoundingClientRect(), k = Math.max(VB[2] / r.width, VB[3] / r.height) || 1, w = r.width * k, hh = r.height * k, cx = VB[0] + VB[2] / 2, cy = VB[1] + VB[3] / 2;
+      const [la1, lo1] = unproj(cx - w / 2, cy - hh / 2), [la2, lo2] = unproj(cx + w / 2, cy + hh / 2); let z = zFor(k / (window.devicePixelRatio > 1 ? 1.5 : 1)), T = tileRange(la1, lo1, la2, lo2, z);
+      while (T.length > 48 && z > 12) T = tileRange(la1, lo1, la2, lo2, --z);
+      const key = T.map(t => t.join("/")).join(","); if (key !== BGKEY) { BGKEY = key; $("#bg").innerHTML = T.map(tileSVG).join(""); } }
+    else if (BGKEY) { BGKEY = ""; $("#bg").innerHTML = ""; }
     document.querySelectorAll("[data-f]").forEach(c => c.onclick = () => { SEL = c.dataset.f; draw(); info(); });
   };
   const info = () => { const f = F.find(x => x.id === SEL);
     const who = f && PKG && PKG.v === 2 ? [f.ag, ...(f.cord ? [f.cord[2], f.cord[3]] : [])].map((a, j) => [a, j]).filter(([a]) => a != null && (a >= 0 || a === -2)).map(([a, j]) => `<span class="tag" style="border-color:${esc(agOf(a)[2])}">${f.cord ? ["تنفيذ: ", "طوق داخلي: ", "طوق خارجي: "][j] : ""}${esc(agOf(a)[1])}</span>`).join("") : "";
     $("#minfo").innerHTML = (f ? `<div class="row"><b>${esc(f.n)}</b><span class="grow">${esc(f.d)}</span></div>${who ? `<div style="margin-top:4px">${who}</div>` : ""}<div class="small muted" dir="ltr" style="text-align:end">${fmtLL(f.g[0], f.g[1])}</div>` : `<div class="small muted">اضغط على منطقة لعرضها، وفعّل «موقعي» لمعرفة المسافة والاتجاه إليها.</div>`)
       + (GPS ? `<div class="gps">موقعي: <span dir="ltr">${fmtLL(GPS.lat, GPS.lon)}</span> (±${Math.round(GPS.acc)} م)${f ? ` · المسافة: <b>${(d => d >= 1000 ? (d / 1000).toFixed(1) + " كم" : Math.round(d) + " م")(distM(GPS.lat, GPS.lon, f.g[0], f.g[1]))}</b> باتجاه <b>${dirAr(brg(GPS.lat, GPS.lon, f.g[0], f.g[1]))}</b> (${Math.round(brg(GPS.lat, GPS.lon, f.g[0], f.g[1]))}°)` : ""}</div>` : ""); };
-  draw(); info();
+  BGKEY = ""; draw(); info();
+  $("#sat").onclick = () => { SATON = !SATON; LS.set("mf.sat", SATON); vMap(); if (SATON) cacheArea(); };
+  if (SATON) { const n = LS.get("mf.tiles", {})[PID]; $("#minfo").insertAdjacentHTML("afterend", `<p class="small muted" id="satst" style="margin:6px 2px 0">${n ? `الصورة الجوية محفوظة للعمل دون اتصال (${n} بلاطة).` : navigator.onLine ? "جارٍ حفظ الصورة الجوية لمنطقة العمليات…" : "الصورة الجوية تحتاج اتصالاً أول مرة."}</p>`); }
   const zoom = k => { const cx = VB[0] + VB[2] / 2, cy = VB[1] + VB[3] / 2; VB = [cx - VB[2] * k / 2, cy - VB[3] * k / 2, VB[2] * k, VB[3] * k]; draw(); };
   $("#zin").onclick = () => zoom(.6); $("#zout").onclick = () => zoom(1.6); $("#fit").onclick = () => { fit(); draw(); };
   $("#me").onclick = () => {
